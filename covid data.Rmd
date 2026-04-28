@@ -1,0 +1,425 @@
+---
+title: "COVID Data Analysis"
+author: "Mason L"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**I attempted, in my own analysis, to compare the covid cases and deaths in the city of New York to the rest of the state to see if there was any disparity in the way the less urban areas of the state responded to COVID-19. Unfortunately the cases and deaths per million table I attempted to make for the non-NYC counties for this comparison kept filling with inf and NaN values, despite using the same process as the NYC values. I wasn't able to resolve this issue, but I left it in the document for reference.**  
+
+**I instead compared the rates of covid deaths per million between Pennsylvania, the state I grew up in, to the national numbers to see how the state fared in its response.**
+
+```{r}
+library(knitr)
+library(readr)
+library(tidyverse)
+library(rmarkdown)
+library(lubridate)
+```
+
+Find URL and .csv files and read them into the 'urls' variable list
+```{r}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+file_names <- c("time_series_covid19_confirmed_US.csv",  "time_series_covid19_confirmed_global.csv", "time_series_covid19_deaths_US.csv",  "time_series_covid19_deaths_global.csv")
+urls <- str_c(url_in, file_names)
+urls
+```
+
+```{r}
+# Read individual .csv files into variables from urls list
+global_cases <- read.csv(urls[2])
+global_deaths <- read.csv(urls[4])
+US_cases <- read.csv(urls[1])
+US_deaths <- read.csv(urls[3])
+
+kable(global_deaths[1:10, 1:5], caption = "Death table")
+```
+
+Create pivot table from date columns with a row for each date in each country
+```{r}
+global_cases <- global_cases %>%
+  pivot_longer(cols = -c('Province.State', 'Country.Region', Lat, Long),
+               names_to = "date",
+               values_to = "cases") %>%
+  select(-c(Lat, Long))
+#global_cases
+```
+
+Create pivot table from date columns with a row for each date in each country
+```{r}
+global_deaths <- global_deaths %>%
+  pivot_longer(cols = -c('Province.State', 'Country.Region', Lat, Long),
+               names_to = "date",
+               values_to = "deaths") %>%
+  select(-c(Lat, Long))
+#global_deaths
+```
+
+Convert 'X' and '.' into '' and '/' to make it possible to convert to date
+```{r}
+global_cases <- global_cases %>%
+  mutate(date = gsub("X", "", date)) %>%
+  mutate(date = gsub("\\.", "/", date))
+global_deaths <- global_deaths %>%
+  mutate(date = gsub("X", "", date)) %>%
+  mutate(date = gsub("\\.", "/", date))
+global_cases
+global_deaths
+```
+
+Join the two tables together - Natural join; pipe operator passes data frame on its left as first argument in full_join
+
+Then replace all empty cells in Province_State column with NA
+```{r}
+global <- global_cases %>%
+  full_join(global_deaths) %>%
+  rename(Country_Region = Country.Region,
+         Province_State = Province.State) %>%
+  mutate(date = mdy(date))
+
+global <- global %>% filter(cases > 0)
+global <- global %>% filter(deaths > 0)
+
+global <- global %>%
+  mutate(Province_State = gsub("^$", NA, Province_State))
+
+global
+summary(global)
+```
+
+Check to see if number of cases are really exceeding 100m
+```{r}
+#global %>% filter(cases > 100000000)
+```
+
+Create pivot table, create row for each date for every county/combined_key
+```{r}
+kable(US_cases[1:5, ], caption = "US Cases")
+US_cases <- US_cases %>% 
+  pivot_longer(cols = -(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases")
+kable(US_cases[1:5, ], caption = "US Cases")
+```
+
+Convert date column to proper date format
+```{r}
+US_cases <- US_cases %>%
+  mutate(date = gsub("X", "", date)) %>%
+  mutate(date = gsub("\\.", "/", date)) %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+#US_cases <- US_cases %>% filter(cases > 0)
+
+kable(US_cases[1:5, ], caption = "US Cases")
+```
+
+Create pivot table, create row for each date for every county/combined_key
+```{r}
+US_deaths <- US_deaths %>%
+  pivot_longer(cols = -(UID:Population),
+               names_to = "date",
+               values_to = "deaths")
+```
+
+```{r}
+US_deaths <- US_deaths %>%
+  mutate(date = gsub("X", "", date)) %>%
+  mutate(date = gsub("\\.", "/", date)) %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat, Long_))
+
+#US_deaths <- US_deaths %>% filter(deaths > 0)
+
+kable(US_deaths[1:5, ], caption = "US Deaths")
+```
+
+Full join US_cases to US_deaths
+```{r}
+US <- US_cases %>%
+  full_join(US_deaths)
+
+kable(US[1:5, ], caption = "US Combined")
+```
+
+Create new "Combined_Key" column that unites the Province_State and Country_Region columns in the form "Province_State, Country_Region"
+
+First half and comma aren't added if the Province_State column is NA (na.rm)
+```{r}
+global <- global %>%
+  unite("Combined_Key",
+        c(Province_State, Country_Region),
+        sep = ", ",
+        na.rm = TRUE,
+        remove = FALSE)
+kable(global[1:5, ], caption = "Global Combined")
+```
+
+^$ replaces empty strings in gsub
+```{r}
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+uid <- read.csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2)) %>%
+  mutate(Province_State = gsub("^$", NA, Province_State))
+kable(uid[1:20, ], caption = "UID")  
+```
+
+Left join global table with 'uid' table that contains country population. merge using Province_State and Country_Region
+```{r}
+global <- global %>%
+left_join(uid, by = c("Province_State", "Country_Region")) %>%
+select(-c(UID, FIPS)) %>%
+  select(Province_State, Country_Region, date,
+         cases, deaths, Population, Combined_Key)
+kable(global[1:5, ], caption = "Global Combined")
+```
+
+## Visualizing Data
+```{r}
+US_by_state <- US %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select(Province_State, Country_Region, date, cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+kable(US_by_state[1:5, ], caption = "Global Combined")
+```
+
+
+```{r}
+US_totals <- US_by_state %>%
+  group_by(Country_Region, date) %>%
+  summarize(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths *1000000 / Population) %>%
+  select(Country_Region, date, cases, deaths, deaths_per_mill, Population) %>%
+  ungroup()
+
+kable(US_totals[1:5, ], caption = "US Totals")
+```
+
+Graph the case and death totals for the US
+```{r}
+US_totals %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position="bottom", axis.text.x = element_text(angle = 90)) + 
+  labs(title = "COVID19 in US", y = NULL)
+```
+
+
+```{r}
+max(US_totals$date)
+max(US_totals$deaths)
+state <- "New York"
+US_by_state %>%
+  filter(Province_State == state) %>% 
+           filter(cases > 0) %>%
+           ggplot(aes(x = date, y = cases)) +
+           geom_line(aes(color = "cases")) + 
+           geom_point(aes(color = "cases")) +
+           geom_line(aes(y = deaths, color = "deaths")) +
+           geom_point(aes(y = deaths, color = "deaths")) +
+           scale_y_log10() + 
+           theme(legend.position="bottom", axis.test.x = element_text(angle = 90)) +
+           labs(title = str_c("COVID19 in ", state), y = NULL)
+```
+
+Find new cases by subtracting previous day (lag()) from present day data
+```{r}
+US_by_state <- US_by_state %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+US_totals <- US_totals %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+tail(US_totals %>% select(new_cases, new_deaths, everything()))
+```
+
+Plot new case totals in the US
+```{r}
+US_totals %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y=NULL)
+```
+
+Plot Virginia new cases
+```{r}
+state <- "Virginia"
+US_by_state %>%
+  filter(Province_State == state) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in Virginia", y=NULL)
+```
+
+
+```{r}
+US_state_totals <- US_by_state %>%
+  group_by(Province_State) %>%
+  summarize(deaths = max(deaths), cases = max(cases),
+            population = max(Population),
+            cases_per_thou = 1000 * cases / population,
+            deaths_per_thou = 11000 * deaths / population) %>%
+  filter(cases > 0, population > 0)
+
+US_state_totals %>%
+  slice_min(deaths_per_thou, n = 10)
+
+US_state_totals %>%
+  slice_max(deaths_per_thou, n = 10)
+```
+
+
+```{r}
+# Model deaths per thousand vs cases per thousand
+mod <- lm(deaths_per_thou ~ cases_per_thou, data = US_state_totals)
+summary(mod)
+```
+
+
+```{r}
+US_state_totals %>% slice_min(cases_per_thou)
+US_state_totals %>% slice_max(cases_per_thou)
+```
+
+
+```{r}
+# Plot the model with prediction values
+US_tot_w_pred <- US_state_totals %>% mutate(pred = predict(mod))
+#US_tot_w_pred
+US_tot_w_pred %>% ggplot() +
+  geom_point(aes(x = cases_per_thou, y = deaths_per_thou), color = "blue") +
+  geom_point(aes(x = cases_per_thou, y = pred), color = "red")
+```
+
+# Additional analysis
+```{r}
+# Create new table for cases and deaths for New York City and a table for every county outside of the city
+US_NY <- US %>%
+  filter(Province_State=="New York")
+
+NYC <- US_NY %>%
+  filter(Admin2=="Kings" | Admin2=="New York" | Admin2=="Bronx" | Admin2=="Queens" | Admin2=="Richmond")
+
+Not_NYC <- US_NY %>%
+  filter_out(Admin2=="Kings" | Admin2=="New York" | Admin2=="Bronx" | Admin2=="Queens" | Admin2=="Richmond")
+
+kable(NYC[1:5, ], caption = "Counties in New York City")
+kable(Not_NYC[1:5, ], caption = "Counties not in New York City")
+```
+
+```{r}
+# Create columns in both tables for cases and deaths per thousand people
+NYC <- NYC %>%
+  mutate(cases_per_thou = cases *1000 / Population) %>%
+  mutate(deaths_per_thou = deaths *1000 / Population)
+
+Not_NYC <- Not_NYC %>%
+  mutate(cases_per_thou_out = cases *1000 / Population) %>%
+  mutate(deaths_per_thou_out = deaths *1000 / Population)
+
+kable(NYC[1000:1005, ], caption = "Counties in New York City")
+kable(Not_NYC[1000:1005, ], caption = "Counties not in New York City")
+```
+
+```{r}
+# Group tables by date and find total cases and deaths per thousand
+sapply(NYC, class)
+sapply(Not_NYC, class)
+
+NYC <- NYC %>%
+  group_by(date) %>%
+  summarize(total_cases_per = sum(cases_per_thou), total_deaths_per = sum(deaths_per_thou))
+
+Not_NYC <- Not_NYC %>%
+  group_by(date) %>%
+  summarize(total_cases_per_out = sum(cases_per_thou_out), total_deaths_per_out = sum(deaths_per_thou_out))
+
+kable(NYC[1000:1005, ], caption = "Counties in New York City")
+kable(Not_NYC[1000:1005, ], caption = "Counties in New York City")
+
+# Not_NYC table keeps being created with only NaN and inf values in the summarized columns while the NYC table works fine. Not sure what causes this
+# I was going to compare NYC vs non-NYC covid cases and deaths but had to abandon this
+```
+
+```{r}
+# Plot cases per thousand inside vs outside city
+NYC %>%
+  ggplot(aes(x = date, y = total_cases_per)) +
+  geom_line(aes(color = "NYC Cases")) +
+  geom_point(aes(color = "NYC Cases")) +
+  #geom_line(data = Not_NYC, aes(x = date, y = total_cases_per), color = "Non-NYC Cases") +
+  #geom_point(data = Not_NYC, aes(x = date, y = total_cases_per), color = "Non-NYC Cases") +
+  #scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in New York City vs Outside the City", y=NULL)
+```
+
+```{r}
+Not_NYC %>%
+  ggplot(aes(x = date, y = total_cases_per_out)) +
+  geom_line(aes(color = "Non-NYC Cases")) +
+  geom_point(aes(color = "Non-NYC Cases")) +
+  #geom_line(data = Not_NYC, aes(x = date, y = total_cases_per), color = "Non-NYC Cases") +
+  #geom_point(data = Not_NYC, aes(x = date, y = total_cases_per), color = "Non-NYC Cases") +
+  #scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in New York City vs Outside the City", y=NULL)
+```
+
+Plot Pennsylvania deaths per million vs US Totals
+```{r}
+# Create dataframe containing only Pennsylvania data from US covid values by state
+PA <- US_by_state %>%
+  filter(Province_State == "Pennsylvania")
+
+ggplot() +
+  geom_point(data = PA, aes(x = date, y = deaths_per_mill, color = "Pennsylvania")) +
+  geom_point(data = US_totals, aes(x = date, y = deaths_per_mill, color = "National"))
+
+```
+
+## Analysis  
+The comparison between the death rates in Pennsylvania and the national numbers show that Pennsylvania did worse than the average. This is in some ways not surprising, as Pennsylvania is a largely rural state. Many areas are under-served by hospitals, and most places between Pittsburgh and Philadelphia are very remote. Pennsylvania's response to COVID was fairly quick. Despite that, during the initial spike, we can see from the graph that Pennsylvania's numbers stay above the national average for all but a few months near the beginning of the pandemic. In Pennsylvania, there is also a large medical industry, including hospitals, nursing, and medical programs, some of which are integrated into university systems. The fact that this did not improve Pennsylvania's numbers is surprising. It is possible that concentration of this industry in certain areas of Pittsburgh and Philadelphia still underserve outlying regions 
+
+## Potential sources of bias:  
+1. Cases that led to deaths but were never tested and verified as COVID-19  
+2. Co-morbidities that were blamed instead of COVID-19 for the death, potentially in patients who were infected during unrelated visit to hospital  
+3. Combination of 1 and 2  
+4. Cases that didn't lead to deaths and were never reported by infected person  
+5. Disparities in reporting mechanisms and reporting standards by state  
+6. My own assumptions that Pennsylvania having a very significant medical industry would lower the death rates
+
+```{r}
+sessionInfo()
+```
+
