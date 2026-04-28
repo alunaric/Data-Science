@@ -10,7 +10,7 @@ output:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
-**My goal in this analysis is to determine whether or not the increase in shootings during the COVID-19 pandemic led, at least in part, to an increase in the percentage of deaths by shooting due to an overburdened medical system.**
+**My goal in this analysis is to determine whether or not the increase in shootings during the COVID-19 pandemic led, at least in part, to an increase in the percentage of deaths by shooting due to an overburdened medical system.**  
 **Potential sources of bias in the data and my assumptions**:  
 1. Over-policing of certain areas in NY can lead to more incident reports in certain areas  
 2. Possible the shooting didn't cause the death, and so wasn't recorded as a death - potential for in-hospital infection or contraction of COVID etc., especially in early days with lack of PPE  
