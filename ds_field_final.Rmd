@@ -1,0 +1,529 @@
+---
+title: "Analysis of NYPD Shooting Data"
+author: "Mason Leonard"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+**Potential sources of bias in the data and my assumptions**:  
+1. Over-policing of certain areas in NY can lead to more incident reports in certain areas  
+2. Possible the shooting didn't cause the death, and so wasn't recorded as a death - potential for in-hospital infection or contraction of COVID etc., especially in early days with lack of PPE  
+3. Lack of nearby hospital and emergency services can increase the likelihood of death from gunshot wounds and increase death statistics in certain areas, making one-to-one comparisons of geographical locations less reliable depending on the variables considered
+4. My tendency to assume lots of issues are caused by, or at least influenced by, economic concerns or close proximity material concerns  
+
+```{r, message=FALSE}
+#Libraries used to run
+library(knitr)
+library(readr)
+library(tidyverse)
+library(tidyr)
+library(rmarkdown)
+library(lubridate)
+library(readxl)
+library(httr)
+```
+
+# Import New York Shooting Data
+```{r}
+# Import the data using read.csv
+url_in  <- "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+shootings <- read.csv(url_in)
+```
+
+# Convert the dates to date objects and trim the table to only potentially useful columns
+```{r}
+# Convert dates to date objects
+shootings <- shootings %>%
+  mutate(OCCUR_DATE =  mdy(OCCUR_DATE))
+
+kable(shootings[1:5, ], caption = "Shootings table with date objects.")
+```
+
+```{r}
+# Remove irrelevant columns
+shootings <- shootings %>%
+  select(-c(LOC_OF_OCCUR_DESC, LOC_CLASSFCTN_DESC)) %>%
+  select(OCCUR_DATE:VIC_RACE)
+
+shootings_by_day <- shootings
+
+kable(shootings[1:5, ], caption = "Cleaner shootings table without irrelevant columns.")
+```
+
+# Add in yearly BORO population numbers from Census Bureau
+```{r}
+url_in <- "https://www2.census.gov/programs-surveys/popest/tables/2020-2025/counties/totals/co-est2025-pop-36.xlsx"
+url2_in <- "https://www2.census.gov/programs-surveys/popest/tables/2010-2020/intercensal/county/co-est2020int-pop-36.xlsx"
+temp_url <- url_in
+```
+
+```{r, results=FALSE}
+# import census data from .xlsx file
+GET(temp_url, write_disk(tf <- tempfile(fileext = ".xlsx")))
+```
+
+```{r, message=FALSE}
+boros <- read_excel(tf, 1L)
+```
+
+```{r, warning=FALSE}
+# set third row values to the titles needed for the table, then set column names to row 3 and remove first 2 rows
+boros[] <- lapply(boros, as.character)
+boros[2] <- NULL
+boros[3,1] = "BORO"
+# Set cell values to date format that is recognized by mdy()
+boros[3,2] = "01/01/20"
+boros[3,3] = "01/01/21"
+boros[3,4] = "01/01/22"
+boros[3,5] = "01/01/23"
+boros[3,6] = "01/01/24"
+boros[3,7] = "01/01/25"
+names(boros) <- boros[3,]
+boros
+#remove first three rows and keep only the population data where the cell value in BORO is equal to "New York"
+boros <- boros[-c(1:3),]
+boros <- subset(boros, BORO %in% c("New York"))
+
+kable(boros[1:3, ], caption = "boro population estimates by year - US Census Bureau")
+```
+
+```{r, results=FALSE}
+# Same process for census data from 2010 - 2020
+GET(url2_in, write_disk(tf <- tempfile(fileext = ".xlsx")))
+```
+
+```{r, message=FALSE}
+boros_2010 <- read_excel(tf, 1L)
+```
+
+
+```{r}
+kable(boros_2010[1:6, ], caption = "boro population estimates by year - US Census Bureau")
+
+boros_2010[] <- lapply(boros_2010, as.character)
+boros_2010[2] <- NULL
+boros_2010[3,1] = "BORO"
+boros_2010[3,2] = "01/01/10"
+boros_2010[3,3] = "01/01/11"
+boros_2010[3,4] = "01/01/12"
+boros_2010[3,5] = "01/01/13"
+boros_2010[3,6] = "01/01/14"
+boros_2010[3,7] = "01/01/15"
+boros_2010[3,8] = "01/01/16"
+boros_2010[3,9] = "01/01/17"
+boros_2010[3,10] = "01/01/18"
+boros_2010[3,11] = "01/01/19"
+boros_2010[3,12] = "01/01/20"
+names(boros_2010) <- boros_2010[3,]
+boros_2010
+boros_2010 <- boros_2010[-c(1:3),]
+
+boros_2010 <- subset(boros_2010, BORO %in% c("New York"))
+
+kable(boros_2010[1:2, ], caption = "boro population estimates by year - US Census Bureau")
+
+boros_2010[12] <- NULL
+kable(boros_2010[1:2, ], caption = "boro population estimates by year - US Census Bureau")
+```
+
+```{r}
+# Merge the 2020-2025 and 2010-2020 census data into one table
+boros_merge = merge(boros_2010, boros, by="BORO")
+kable(boros_merge[1:2, ], caption = "boro population estimates by year - US Census Bureau")
+```
+
+```{r}
+# Create pivot table to match format of shooting data: one column for date, one for population
+boros_flip <- boros_merge %>%
+  pivot_longer(cols = -c('BORO'),
+               names_to = "OCCUR_DATE_YEAR",
+               values_to = "POPULATION")
+# Convert dates to date objects
+boros_flip <- boros_flip %>%
+  mutate(OCCUR_DATE_YEAR = mdy(OCCUR_DATE_YEAR))
+
+kable(boros_flip[1:5, ], caption = "Boro populations")
+```
+
+# Create new table that sets dates to floor_date to categorize by month
+```{r, results= "hide"}
+shootings_by_month <- shootings %>% 
+  mutate(OCCUR_DATE = floor_date(OCCUR_DATE, "month"))
+```
+
+# Create new table that sets dates to floor_date to categorize by year
+```{r}
+shootings_by_year <- shootings %>% 
+  mutate(OCCUR_DATE = floor_date(OCCUR_DATE, "year"))
+```
+
+```{r}
+kable(shootings_by_month[1:5, ], caption = "Shootings by month.")
+kable(shootings_by_year[1:5, ], caption = "Shootings by year.")
+```
+
+# Add Population numbers to shooting data table
+```{r}
+# Add dates shootings_by_year so yearly population numbers can be matched to a row
+monthly_added_pop <- cbind(shootings_by_month, shootings_by_year)
+colnames(monthly_added_pop)[14] <- "OCCUR_DATE_YEAR"
+# Remove columns to the right of OCCUR_DATE_YEAR
+monthly_added_pop <- monthly_added_pop %>%
+  select(OCCUR_DATE:OCCUR_DATE_YEAR)
+kable(monthly_added_pop[1:5, ], caption = "Shootings by month.")
+```
+
+```{r}
+# Match dates in boros_flip table to OCCUR_DATE_YEAR in monthly_added_pop table and create a POPULATION COLUMN, populated by population numbers
+monthly_added_pop$POPULATION = boros_flip$POPULATION[ match(monthly_added_pop$OCCUR_DATE_YEAR, boros_flip$OCCUR_DATE_YEAR) ]
+kable(monthly_added_pop[1:5, ], caption = "Shootings by month.")
+```
+
+# Graph shootings by day
+```{r}
+# Tally the number of shootings that happened on each day in OCCUR_DATE, then graph shootings vs date
+daily_shootings <- shootings_by_day %>%
+  group_by(OCCUR_DATE) %>%
+  tally()
+kable(daily_shootings[1:5, ], caption = "Table of Daily Shootings in NY")
+
+daily_shootings %>%
+  ggplot(aes(x = OCCUR_DATE, y = n)) +
+  geom_line(aes(color = "n")) +
+  geom_point(aes(color = "n")) +
+  #scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Daily Shootings in NY", y=NULL)
+```
+- Graph shows massive spike in shootings in the summer of 2020; potential for strain on healthcare system and increased rate of death for victims if hospitals and EMS overwhelmed during COVID
+
+## Ten highest numbers of daily shootings
+```{r}
+daily_shootings %>%
+  arrange(desc(n)) %>%
+  slice(1:10) 
+```
+
+## Ten lowest numbers of daily shootings
+```{r}
+daily_shootings %>%
+  arrange(n) %>%
+  slice(1:10)
+```
+
+# Graph the increases and decreases in shootings by day
+```{r}
+# Create new table for daily increases and decreases (daily shootings minus lag)
+daily_shootings_lag <- daily_shootings %>%
+  mutate(daily_lag = n - lag(n))
+
+# Graph the daily increases and decreases
+daily_shootings_lag %>%
+  ggplot(aes(x = OCCUR_DATE, y = daily_lag)) +
+  geom_line(aes(color = "n")) +
+  geom_point(aes(color = "n")) +
+  #scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Change in Daily Shootings in NY", y=NULL)
+```
+
+# Maximum value in each column for daily shootings graph
+```{r}
+daily_shootings[which.max(daily_shootings$n),]
+```
+
+# Maximum value in each column for daily shootings lag graph
+```{r}
+daily_shootings_lag[which.max(daily_shootings_lag$daily_lag),]
+```
+
+# Graph shootings by Month
+```{r}
+# Same process as for the daily shootings
+monthly_shootings <- shootings %>%
+  group_by(month = lubridate::floor_date(OCCUR_DATE, "month")) %>%
+  tally()
+
+kable(monthly_shootings[49:60, ], caption = "Table of Monthly Shootings in NY")
+
+monthly_shootings %>%
+  ggplot(aes(x = month, y = n)) +
+  geom_line(aes(color = "n")) +
+  geom_point(aes(color = "n")) +
+  #scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Monthly Shootings in NY", y=NULL)
+```
+
+## Ten highest numbers of monthly shootings
+```{r}
+monthly_shootings %>%
+  arrange(desc(n)) %>%
+  slice(1:10) 
+```
+
+## Ten lowest numbers of monthly shootings
+```{r}
+monthly_shootings %>%
+  arrange(n) %>%
+  slice(1:10)
+
+summary(monthly_shootings)
+```
+
+```{r}
+# create increase and decrease table by month
+monthly_shootings_lag <- monthly_shootings %>%
+  mutate(monthly_lag = n - lag(n))
+```
+
+## Ten highest numbers of monthly shootings, including increases
+```{r}
+# Show how much the shootings increased in the month with the highest number of shootings
+monthly_shootings_lag %>%
+  arrange(desc(n)) %>%
+  slice(1:10)
+```
+
+## Ten highest numbers of monthly increases
+```{r}
+monthly_shootings_lag %>%
+  arrange(desc(monthly_lag)) %>%
+  slice(1:10)
+```
+
+# Graph the increases and decreases in shootings by Month
+```{r}
+monthly_shootings_lag %>%
+  ggplot(aes(x = month, y = monthly_lag)) +
+  geom_line(aes(color = "n")) +
+  geom_point(aes(color = "n")) +
+  #scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Change in Monthly Shootings in NY", y=NULL)
+```
+
+## Combined graph of Monthly shootings and change in monthly shootings
+```{r}
+monthly_shootings_lag %>%
+  ggplot(aes(x = month, y = n)) +
+  geom_line(aes(color = "number of shootings")) +
+  geom_point(aes(color = "number of shootings")) +
+  geom_line(aes(y = monthly_lag, color = "monthly change")) +
+  geom_point(aes(y = monthly_lag, color = "monthly change")) +
+  #scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Monthly Shootings and Monthly Change in Shootings in NY", y=NULL)
+```
+
+# Maximum and minimum values in each column for monthly shootings graph
+```{r}
+monthly_shootings[which.max(monthly_shootings$n),]
+monthly_shootings[which.min(monthly_shootings$n),]
+```
+
+# Maximum and minimum values in each column for monthly shootings lag graph
+```{r}
+monthly_shootings_lag[which.max(monthly_shootings_lag$monthly_lag),]
+monthly_shootings_lag[which.min(monthly_shootings_lag$monthly_lag),]
+```
+
+## Ten largest increases in monthly shootings
+```{r}
+monthly_shootings_lag %>%
+  arrange(desc(monthly_lag)) %>%
+  slice(1:10) 
+```
+
+## Ten largest decreases in monthly shootings
+```{r}
+monthly_shootings_lag %>%
+  arrange(monthly_lag) %>%
+  slice(1:10)
+```
+
+## Find the number of murders over time
+```{r}
+# Create function that tallies the number of true and false values (murder and non-murder) and then appends them to true and false vector
+find_murders <- function(sDate){
+  set_month <- shootings_by_month %>%
+    filter(OCCUR_DATE == sDate)
+  
+  # Tally number of true and false values in STATISTICAL_MURDER_FLAG column
+  set_month_tally <- set_month %>%
+    group_by(STATISTICAL_MURDER_FLAG) %>%
+    tally()
+  
+  # Create variable and set them equal to tallies
+  murder_t <- set_month_tally$n[set_month_tally$STATISTICAL_MURDER_FLAG=="true"] 
+  murder_f <- set_month_tally$n[set_month_tally$STATISTICAL_MURDER_FLAG=="false"]
+  
+  # Create numeric vector and append true and false tallies
+  returns <- numeric()
+  returns[1] <- murder_t
+  returns[2] <- murder_f
+  
+  return(returns)
+}
+```
+
+```{r}
+# Create numeric vectors to store output tallies from find_murders function
+t_vec <- numeric()
+f_vec <- numeric()
+```
+
+```{r}
+# Set range of dates to a vector
+myDates <- seq.Date(as.Date("2006-01-01"), ("2024-12-01") , by = "month")
+# Create for loop that iterates through every date and runs it through find_murders function, then appends outputs to vectors
+for (i in 1:length(myDates)){
+  sTable <- find_murders(myDates[i])
+  t_vec[i] <- sTable[1]
+  f_vec[i] <- sTable[2]
+  
+  }
+```
+
+```{r}
+# Create new dataframe from dates and tallies
+df <- data.frame(
+  Date = myDates,
+  Murders = t_vec,
+  Non_Murders = f_vec
+)
+```
+
+```{r}
+# Graph the new table
+df %>%
+  ggplot(aes(x = Date, y = Murders)) +
+  geom_line(aes(color = "Fatal")) +
+  geom_point(aes(color = "Fatal")) +
+  geom_line(aes(y = Non_Murders, color = "Non-Fatal")) +
+  geom_point(aes(y = Non_Murders, color = "Non-Fatal")) +
+  #scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Monthly Fatal vs Non-Fatal Shootings", y=NULL)
+```
+
+```{r}
+# Filter monthly table to have only months between Jan 2015 and Dec 2025
+monthly_added_pop <- monthly_added_pop %>% filter(between(OCCUR_DATE, as.Date('2015-01-01'), as.Date('2025-12-31')))
+
+kable(monthly_added_pop[1:5, ], caption = "Monthly shootings and population")
+```
+
+## Add monthly deaths per thousand and monthly shootings per thousand
+```{r}
+# Create new table that tallies monthly shootings using new date range
+monthly_shootings <- monthly_added_pop %>%
+  group_by(month = lubridate::floor_date(OCCUR_DATE, "month")) %>%
+  tally()
+
+kable(monthly_shootings[13:24, ], caption = "Table of Monthly Shootings in NY")
+
+# Graph monthly shootings
+monthly_shootings %>%
+  ggplot(aes(x = month, y = n)) +
+  geom_line(aes(color = "n")) +
+  geom_point(aes(color = "n")) +
+  #scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "Monthly Shootings in NY, 2015-2025", y=NULL)
+```
+
+```{r}
+# Mutate "true" and "false" values to 0 and 1 so they can be summed
+monthly_added_pop <- monthly_added_pop %>%
+  mutate(STATISTICAL_MURDER_FLAG = gsub("true", 1, STATISTICAL_MURDER_FLAG)) %>%
+  mutate(STATISTICAL_MURDER_FLAG = gsub("false", 0, STATISTICAL_MURDER_FLAG))
+
+
+#apply(monthly_added_pop, 2, function(STATISTICAL_MURDER_FLAG) class(STATISTICAL_MURDER_FLAG))
+
+kable(monthly_added_pop[1:5, ], caption = "test")
+
+# Create table that adds number of deaths based on sum of STATISTICAL_MURDER_FLAG column for each month and add population values
+monthly_per_mill <- monthly_added_pop %>%
+  group_by(month = lubridate::floor_date(OCCUR_DATE, "month")) %>%
+  summarize(deaths = sum(as.numeric(STATISTICAL_MURDER_FLAG)), population = mean(as.numeric(POPULATION))) %>%
+  # Add deaths per million column
+  mutate(deaths_per_mill = deaths *1000000 / population) %>%
+  select(month, deaths, population, deaths_per_mill)
+
+kable(monthly_per_mill[1:5, ], caption = "test")
+
+# Add column for total monthly shootings by matching dates for tallied numbers from monthly_shootings table
+monthly_per_mill$shootings = monthly_shootings$n[ match(monthly_per_mill$month, monthly_shootings$month) ]
+
+# Add shootings per million column
+monthly_per_mill <- monthly_per_mill %>%
+  mutate(shootings_per_mill = shootings * 1000000 / population)
+
+kable(monthly_per_mill[1:5, ], caption = "test")
+```
+
+## Model variables and plot model + predictions
+```{r}
+# Model deaths per million vs shootings per million
+mod <- lm(deaths_per_mill ~ shootings_per_mill, data = monthly_per_mill)
+summary(mod)
+```
+
+```{r}
+# Find min and max values for shootings per million and deaths per million
+monthly_per_mill %>% slice_min(shootings_per_mill)
+monthly_per_mill %>% slice_max(shootings_per_mill)
+
+monthly_per_mill %>%  slice_min(deaths_per_mill)
+monthly_per_mill %>%  slice_max(deaths_per_mill)
+```
+
+```{r}
+# Generate prediction values and add them to table
+monthly_with_pred <- monthly_per_mill %>% mutate(pred = predict(mod))
+kable(monthly_with_pred[1:5, ], caption = "")
+```
+
+```{r}
+# Graph shootings_per_mill vs deaths_per_mill with prediction values 
+monthly_with_pred %>% ggplot() +
+  geom_point(aes(x = shootings_per_mill, y = deaths_per_mill), color = "blue") +
+  geom_point(aes(x = shootings_per_mill, y = pred), color = "red")
+```
+
+```{r}
+# Create new predition table by filtering for dates only during the lockdown
+monthly_pred_only_shutdown <- monthly_with_pred %>% filter(between(month, as.Date('2020-03-01'), as.Date('2021-07-01')))
+```
+
+```{r}
+# Plot same values but with lockdown dates overlaid in green
+monthly_with_pred %>% ggplot() +
+  geom_point(aes(x = shootings_per_mill, y = deaths_per_mill), color = "blue") +
+  geom_point(aes(x = shootings_per_mill, y = pred), color = "red") +
+  geom_point(data = monthly_pred_only_shutdown, aes(x = shootings_per_mill, y = deaths_per_mill), color = "green")
+```
+
+**Analysis**  
+Despite increased strain on the healthcare system in New York, the percentage of deaths does not seem to increase when there was a spike in shootings in Summer 2020. It's possible that shooting victims were given priority in emergency rooms and surgery, or that the victims were sufficiently spread out between hospitals in the city that the hospitals and EMS were able to absorb the additional cases.  
+
+
+```{r}
+sessionInfo()
+```
+
